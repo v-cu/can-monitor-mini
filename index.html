@@ -366,7 +366,10 @@ var blobs={};
 var EXT=document.createElement("video").canPlayType('video/webm; codecs="vp9"')?"webm":"mp4";
 function vurl(k){ k=k+"."+EXT; if(!VD) return "assets/"+k; if(!blobs[k]){ var b=atob(VD[k]),a=new Uint8Array(b.length); for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i); blobs[k]=URL.createObjectURL(new Blob([a],{type:"video/"+EXT})); } return blobs[k]; }
 var dv=document.getElementById("devVid"), pv=document.getElementById("phVid");
-function setVid(v,k){ var t=v.currentTime||0; v.src=vurl(k); v.addEventListener("loadedmetadata",function f(){v.removeEventListener("loadedmetadata",f); try{v.currentTime=t;}catch(e){} }); var p=v.play(); if(p&&p.catch)p.catch(function(){}); }
+function setVid(v,k){ var t=v.currentTime||0; v.src=vurl(k);
+  /* file missing on the server (e.g. only .mp4 uploaded): try the other format once */
+  v.onerror=function(){ if(VD) return; var s=v.getAttribute("src")||"", o=/\.webm$/.test(s)?s.replace(/\.webm$/,".mp4"):(/\.mp4$/.test(s)?s.replace(/\.mp4$/,".webm"):""); if(o&&!v.dataset.tried){ v.dataset.tried="1"; v.src=o; var q=v.play(); if(q&&q.catch)q.catch(function(){}); } };
+  v.dataset.tried=""; v.addEventListener("loadedmetadata",function f(){v.removeEventListener("loadedmetadata",f); try{v.currentTime=t;}catch(e){} }); var p=v.play(); if(p&&p.catch)p.catch(function(){}); }
 
 /* language */
 function setLang(l){
