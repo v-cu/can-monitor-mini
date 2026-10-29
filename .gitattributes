@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# firmware images for the web installer: never touch line endings
+*.bin binary

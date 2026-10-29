@@ -1,0 +1,56 @@
+/* install.css - "Instalacja / Install" tab (install.js); uses the page tokens */
+.inst{padding-block:56px 80px}
+.inst-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,440px);gap:48px;align-items:start}
+.inst h2{font-size:clamp(28px,3.6vw,40px);font-weight:800;line-height:1.1;margin-top:10px}
+.inst h3{font-family:var(--f-disp);font-size:18px;margin:30px 0 12px}
+.inst .lead{color:#b9c3d1;font-size:17px;margin:14px 0 18px;max-width:38em}
+.fw-badge{display:inline-flex;flex-wrap:wrap;gap:4px 6px;align-items:center;font:500 13px var(--f-mono);color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+.fw-badge b{color:var(--cyan);font-weight:500}
+.fw-badge .dim{color:var(--dim)}
+.isteps{margin:0;padding-left:22px;color:#c9d2de;display:grid;gap:8px}
+.isteps li::marker{color:var(--cyan);font-family:var(--f-mono)}
+.inote,.itip{border-radius:12px;padding:12px 16px;font-size:14.5px;margin-top:18px;color:#c9d2de}
+.inote{background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.25)}
+.itip{background:rgba(0,225,240,.07);border:1px solid rgba(0,225,240,.22)}
+.inote b,.itip b{color:var(--fg)}
+
+/* installer card */
+.inst-card{position:sticky;top:calc(env(safe-area-inset-top,0px) + 88px);background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:22px}
+.rail{list-style:none;margin:0 0 22px;padding:0;display:grid;gap:10px}
+.rail li{display:flex;align-items:center;gap:12px;color:var(--dim);font-size:14.5px}
+.rail li i{flex:none;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font:600 12px var(--f-mono);font-style:normal;border:1px solid var(--line);background:var(--bg)}
+.rail li.on{color:var(--fg)}
+.rail li.on i{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 0 4px rgba(0,225,240,.12);animation:ipulse 1.2s ease-in-out infinite}
+.rail li.ok{color:#c9d2de}
+.rail li.ok i{background:var(--cyan);border-color:var(--cyan);color:#021014}
+.rail li.err{color:#ff7a87}
+.rail li.err i{background:var(--red);border-color:var(--red);color:#fff}
+@keyframes ipulse{50%{box-shadow:0 0 0 7px rgba(0,225,240,.04)}}
+.ibig{display:flex;align-items:baseline;gap:14px;min-height:46px}
+.ibig b{flex:none;font:800 34px var(--f-disp);font-variant-numeric:tabular-nums;min-width:3.2ch}
+.ibig span{color:#b9c3d1;font-size:14.5px;line-height:1.4}
+.ibig span b{font:600 14.5px var(--f-mono);min-width:0;color:var(--fg)}
+.ibar{height:8px;border-radius:9px;background:var(--bg);border:1px solid var(--line);overflow:hidden;margin:12px 0 20px}
+.ibar i{display:block;height:100%;width:0;background:var(--arc);transition:width .25s}
+.inst-card[data-state="ok"] .ibar i{background:var(--cyan)}
+.inst-card[data-state="err"] .ibar i{background:var(--red)}
+.inst-card[data-state="err"] .ibig span{color:#ff9aa4}
+.ichk{display:flex;gap:10px;align-items:flex-start;font-size:14.5px;color:#c9d2de;cursor:pointer;margin-bottom:14px}
+.ichk input{margin-top:3px;width:17px;height:17px;accent-color:var(--cyan);flex:none}
+.ichk.small{font-size:13px;color:var(--muted);margin:14px 0 0}
+.ibtn{width:100%;padding:14px 20px;font-size:16px}
+.ibtn:disabled{opacity:.4;cursor:default;filter:none}
+.ilog{margin-top:16px;font-size:13px;color:var(--muted)}
+.ilog summary{cursor:pointer}
+.ilog pre{margin:8px 0 0;max-height:220px;overflow:auto;font:12px/1.5 var(--f-mono);color:#9fb0c4;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all}
+.ifiles{width:100%;border-collapse:collapse;margin-top:18px;font:12.5px var(--f-mono);color:var(--muted)}
+.ifiles th{text-align:left;font-weight:500;color:var(--dim);padding:6px 0;border-bottom:1px solid var(--line)}
+.ifiles td{padding:6px 0;border-bottom:1px solid var(--line)}
+.ifiles td:last-child,.ifiles th:last-child{text-align:right}
+.inst-help{margin-top:56px;max-width:900px}
+
+@media (max-width:900px){
+  .inst-grid{grid-template-columns:minmax(0,1fr)}
+  .inst-card{position:static}
+}
+@media (prefers-reduced-motion:reduce){.rail li.on i{animation:none}}
