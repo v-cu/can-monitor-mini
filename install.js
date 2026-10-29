@@ -1,15 +1,24 @@
 /*
- * install.js - "Instalacja / Install" tab: flashes the whole firmware from the
- * browser (Web Serial + esptool-js), after a full erase of the flash.
+ * install.js - "Instalacja / Install" tab: firmware from the browser
+ * (Web Serial + esptool-js). Two modes:
  *
- * firmware/manifest.json lists the files and their flash addresses
- * (made by tools/export_web_firmware.py in the firmware project).
+ *   update (default)  writes otadata + app + the databases. The settings
+ *                     partition (NVS: screens, car profiles, settings, serial
+ *                     number) is not touched. Before writing, the device is
+ *                     read: the partition table must be the same as on the
+ *                     site and the running app must be CAN Monitor mini.
+ *                     otadata is written too: after a phone (OTA) update the
+ *                     device may run from ota_1 and would ignore a new app in
+ *                     ota_0 - a blank otadata boots ota_0.
+ *   full              erases the whole flash, then writes everything.
  *
- * Safe by design:
- *  - only an ESP32-S3 with 16 MB flash is accepted (checked BEFORE erasing),
- *  - eFuses are never touched; the ROM bootloader cannot be overwritten, so an
- *    interrupted install is fixed by running it again,
- *  - every file is verified with MD5 after writing.
+ * firmware/manifest.json: files, addresses, sizes, MD5, role of every file
+ * (tools/export_web_firmware.py in the firmware project).
+ *
+ * Safe by design: only an ESP32-S3 with enough flash is accepted (checked
+ * before anything is erased or written); eFuses are never touched; the ROM
+ * bootloader cannot be overwritten, so an interrupted run is fixed by running
+ * it again; every file is verified with MD5 after writing.
  */
 (function () {
   "use strict";
@@ -17,6 +26,9 @@
   var ESPTOOL_URL = "https://unpkg.com/esptool-js@0.6.1/bundle.js";
   var MANIFEST = "firmware/manifest.json";
   var ESPRESSIF_VID = 0x303a;
+  var PT_ADDR = 0x8000, PT_SIZE = 0xC00, OTADATA_ADDR = 0xF000;
+  var APP_DESC_MAGIC = 0xABCD5432;
+  var FULL_ONLY = { "bootloader": 1, "partition-table": 1 };   /* roles written only from scratch */
 
   var root = document.getElementById("page-install");
   if (!root) return;
@@ -26,57 +38,66 @@
   function tx(pl, en) { return lang() === "en" ? en : pl; }
   function kb(n) { return n >= 1048576 ? (n / 1048576).toFixed(2).replace(".", lang() === "pl" ? "," : ".") + " MB" : Math.round(n / 1024) + " kB"; }
   function hex(n) { return "0x" + n.toString(16).toUpperCase(); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
-  var STAGES = [
-    ["dl", "Pobranie plików", "Download files"],
-    ["conn", "Połączenie", "Connect"],
-    ["erase", "Czyszczenie pamięci", "Erase flash"],
-    ["write", "Zapis i weryfikacja", "Write and verify"],
-    ["boot", "Uruchomienie", "Restart"],
-  ];
+  var STAGES = {
+    update: [["dl", "Pobranie plików", "Download files"], ["conn", "Połączenie", "Connect"], ["check", "Sprawdzenie urządzenia", "Check the device"],
+             ["write", "Zapis i weryfikacja", "Write and verify"], ["boot", "Uruchomienie", "Restart"]],
+    full:   [["dl", "Pobranie plików", "Download files"], ["conn", "Połączenie", "Connect"], ["erase", "Czyszczenie całej pamięci", "Erase the whole flash"],
+             ["write", "Zapis i weryfikacja", "Write and verify"], ["boot", "Uruchomienie", "Restart"]],
+  };
 
   var supported = "serial" in navigator;
+  var mode = "update";
 
   root.innerHTML =
     '<section class="inst"><div class="wrap">' +
     '<div class="inst-grid">' +
     '<div class="inst-info">' +
     '<div class="label">' + t("Instalacja", "Installation") + "</div>" +
-    "<h2>" + t("Wgraj firmware prosto z przeglądarki", "Install the firmware straight from the browser") + "</h2>" +
-    '<p class="lead">' + t("Podłącz urządzenie kablem USB-C do komputera i kliknij <b>Zainstaluj</b>. Strona wyczyści całą pamięć urządzenia i wgra aktualny firmware razem z bazami parametrów i opisów błędów. Nie trzeba niczego instalować.",
-      "Connect the device to a computer with a USB-C cable and click <b>Install</b>. The page erases the whole device memory and writes the current firmware together with the parameter and fault-code databases. Nothing to install.") + "</p>" +
+    "<h2>" + t("Firmware prosto z przeglądarki", "Firmware straight from the browser") + "</h2>" +
+    '<p class="lead">' + t("Podłącz urządzenie kablem USB-C do komputera i wybierz, co chcesz zrobić. Nie trzeba niczego instalować.",
+      "Connect the device to a computer with a USB-C cable and choose what to do. Nothing to install.") + "</p>" +
     '<div class="fw-badge" id="fwBadge">Firmware <b>…</b></div>' +
+    '<div class="modes2">' +
+    '<div><b>' + t("Aktualizacja", "Update") + "</b><span>" + t("Wgrywa nowy firmware i bazy parametrów. Ekrany, ustawienia, profile aut i numer seryjny zostają.",
+      "Writes the new firmware and parameter databases. Screens, settings, car profiles and the serial number stay.") + "</span></div>" +
+    '<div><b>' + t("Instalacja od zera", "Install from scratch") + "</b><span>" + t("Czyści całą pamięć i wgrywa wszystko od nowa. Dla nowej płytki albo gdy aktualizacja nie jest możliwa.",
+      "Erases the whole memory and writes everything again. For a new board or when an update is not possible.") + "</span></div>" +
+    "</div>" +
     "<h3>" + t("Co jest potrzebne", "What you need") + "</h3>" +
     '<ul class="checks">' +
     "<li><span>" + t("<b>Chrome, Edge lub Opera na komputerze</b> (Windows, macOS, Linux). Telefony, Firefox i Safari nie mają dostępu do portu USB ze strony.",
       "<b>Chrome, Edge or Opera on a computer</b> (Windows, macOS, Linux). Phones, Firefox and Safari cannot reach a USB port from a web page.") + "</span></li>" +
     "<li><span>" + t("<b>Kabel USB-C do transmisji danych</b>, nie tylko do ładowania.", "<b>A USB-C data cable</b>, not a charge-only one.") + "</span></li>" +
-    "<li><span>" + t("<b>Urządzenie odłączone od auta.</b> Do instalacji wystarczy zasilanie z USB.", "<b>The device unplugged from the car.</b> USB power is enough for the install.") + "</span></li>" +
+    "<li><span>" + t("<b>Urządzenie odłączone od auta.</b> Wystarczy zasilanie z USB.", "<b>The device unplugged from the car.</b> USB power is enough.") + "</span></li>" +
     "</ul>" +
     "<h3>" + t("Jak to przebiega", "How it goes") + "</h3>" +
     '<ol class="isteps">' +
     "<li>" + t("Podłącz urządzenie do komputera.", "Connect the device to the computer.") + "</li>" +
-    "<li>" + t("Zaznacz potwierdzenie i kliknij <b>Zainstaluj</b>.", "Tick the confirmation and click <b>Install</b>.") + "</li>" +
+    "<li>" + t("Wybierz <b>Aktualizacja</b> albo <b>Instalacja od zera</b> i kliknij przycisk pod paskiem postępu.", "Choose <b>Update</b> or <b>Install from scratch</b> and click the button under the progress bar.") + "</li>" +
     "<li>" + t("Wybierz port <b>USB JTAG/serial debug unit</b> i kliknij <b>Połącz</b>.", "Pick the port <b>USB JTAG/serial debug unit</b> and click <b>Connect</b>.") + "</li>" +
-    "<li>" + t("Poczekaj ok. 2 minut i nie odłączaj kabla.", "Wait about 2 minutes and keep the cable connected.") + "</li>" +
-    "<li>" + t("Urządzenie uruchomi się samo i pokaże kod QR do połączenia z telefonem.", "The device restarts by itself and shows the QR code for the phone.") + "</li>" +
+    "<li>" + t("Poczekaj (aktualizacja ok. 1 min, instalacja od zera ok. 2 min) i nie odłączaj kabla.", "Wait (update about 1 min, install from scratch about 2 min) and keep the cable connected.") + "</li>" +
+    "<li>" + t("Urządzenie uruchomi się samo z nowym firmware.", "The device restarts by itself with the new firmware.") + "</li>" +
     "</ol>" +
-    '<div class="inote">' + t("<b>Instalacja usuwa wszystko z pamięci urządzenia:</b> ekrany, profile aut i ustawienia. Po instalacji urządzenie startuje jak nowe.",
-      "<b>The install erases everything in the device memory:</b> screens, car profiles and settings. Afterwards the device starts like a new one.") + "</div>" +
-    '<div class="itip">' + t("<b>Bezpiecznie dla urządzenia.</b> Program startowy ESP32-S3 jest w pamięci ROM i nie da się go nadpisać. Jeśli instalacja się przerwie, na przykład po odłączeniu kabla, podłącz urządzenie ponownie i zainstaluj jeszcze raz.",
-      "<b>Safe for the device.</b> The ESP32-S3 start-up program is in ROM and cannot be overwritten. If the install is interrupted, for example by unplugging the cable, connect the device again and repeat the install.") + "</div>" +
+    '<div class="itip">' + t("<b>Bezpiecznie dla urządzenia.</b> Program startowy ESP32-S3 jest w pamięci ROM i nie da się go nadpisać. Jeśli zapis się przerwie, na przykład po odłączeniu kabla, podłącz urządzenie ponownie i powtórz.",
+      "<b>Safe for the device.</b> The ESP32-S3 start-up program is in ROM and cannot be overwritten. If writing is interrupted, for example by unplugging the cable, connect the device again and repeat.") + "</div>" +
     "</div>" +
 
     '<div class="inst-card" id="instCard">' +
-    '<ol class="rail" id="rail">' + STAGES.map(function (s, i) {
-      return '<li data-s="' + s[0] + '"><i>' + (i + 1) + "</i><span>" + t(s[1], s[2]) + "</span></li>";
-    }).join("") + "</ol>" +
-    '<div class="ibig"><b id="iPct">0%</b><span id="iMsg">' + (supported ? t("Gotowe do instalacji", "Ready to install") : t("Ta przeglądarka nie obsługuje USB", "This browser has no USB support")) + "</span></div>" +
+    '<div class="seg2" role="radiogroup">' +
+    '<button type="button" data-m="update" aria-pressed="true">' + t("Aktualizacja", "Update") + "</button>" +
+    '<button type="button" data-m="full" aria-pressed="false">' + t("Instalacja od zera", "From scratch") + "</button>" +
+    "</div>" +
+    '<ol class="rail" id="rail"></ol>' +
+    '<div class="ibig"><b id="iPct">0%</b><span id="iMsg"></span></div>' +
     '<div class="ibar"><i id="iBar"></i></div>' +
-    (supported ? "" : '<div class="inote" style="margin-top:16px">' + t("Otwórz tę stronę w <b>Chrome</b>, <b>Edge</b> lub <b>Operze</b> na komputerze.", "Open this page in <b>Chrome</b>, <b>Edge</b> or <b>Opera</b> on a computer.") + "</div>") +
-    '<label class="ichk"><input type="checkbox" id="iOk"' + (supported ? "" : " disabled") + "><span>" +
-    t("Rozumiem, że wszystkie ustawienia urządzenia zostaną usunięte.", "I understand that all device settings will be erased.") + "</span></label>" +
-    '<button type="button" class="btn pri ibtn" id="iGo" disabled>' + t("Zainstaluj", "Install") + "</button>" +
+    (supported ? "" : '<div class="inote" style="margin:0 0 16px">' + t("Otwórz tę stronę w <b>Chrome</b>, <b>Edge</b> lub <b>Operze</b> na komputerze.", "Open this page in <b>Chrome</b>, <b>Edge</b> or <b>Opera</b> on a computer.") + "</div>") +
+    '<div class="inote" id="iWarn" hidden style="margin:0 0 14px">' + t("<b>Instalacja od zera usuwa wszystko z pamięci urządzenia:</b> ekrany, profile aut, ustawienia i numer seryjny.",
+      "<b>Install from scratch erases everything in the device memory:</b> screens, car profiles, settings and the serial number.") + "</div>" +
+    '<label class="ichk" id="iOkRow" hidden><input type="checkbox" id="iOk"><span>' +
+    t("Rozumiem, że wszystkie dane urządzenia zostaną usunięte.", "I understand that all device data will be erased.") + "</span></label>" +
+    '<button type="button" class="btn pri ibtn" id="iGo" disabled></button>' +
     '<label class="ichk small"><input type="checkbox" id="iAll"><span>' +
     t("Nie widzę urządzenia na liście – pokaż wszystkie porty", "I don't see the device – show all ports") + "</span></label>" +
     '<details class="ilog"><summary>' + t("Szczegóły (log)", "Details (log)") + '</summary><pre id="iLog"></pre></details>' +
@@ -91,10 +112,12 @@
       "Try another (data) cable or another USB socket. Tick <b>show all ports</b>. On Windows the device shows in Device Manager as <i>USB JTAG/serial debug unit</i>.") + "</td></tr>" +
     "<tr><td>" + t("„Nie można otworzyć portu”", "“Cannot open the port”") + "</td><td>" + t("Port jest zajęty przez inny program (monitor portu, Arduino IDE, ESP-IDF). Zamknij go i spróbuj ponownie.",
       "Another program holds the port (serial monitor, Arduino IDE, ESP-IDF). Close it and try again.") + "</td></tr>" +
-    "<tr><td>" + t("Brak połączenia z urządzeniem", "No connection to the device") + "</td><td>" + t("Odłącz kabel na kilka sekund, podłącz ponownie i kliknij <b>Zainstaluj</b> jeszcze raz.",
-      "Unplug the cable for a few seconds, plug it back in and click <b>Install</b> again.") + "</td></tr>" +
-    "<tr><td>" + t("Przerwana instalacja", "Interrupted install") + "</td><td>" + t("Urządzenie może nie uruchomić się, ale nie jest uszkodzone. Powtórz instalację.",
-      "The device may not start, but it is not damaged. Run the install again.") + "</td></tr>" +
+    "<tr><td>" + t("Brak połączenia z urządzeniem", "No connection to the device") + "</td><td>" + t("Odłącz kabel na kilka sekund, podłącz ponownie i spróbuj jeszcze raz.",
+      "Unplug the cable for a few seconds, plug it back in and try again.") + "</td></tr>" +
+    "<tr><td>" + t("„Aktualizacja niemożliwa”", "“Update not possible”") + "</td><td>" + t("Na urządzeniu nie ma firmware CAN Monitor mini albo zmienił się układ pamięci. Użyj <b>Instalacji od zera</b>.",
+      "The device has no CAN Monitor mini firmware or the memory layout changed. Use <b>Install from scratch</b>.") + "</td></tr>" +
+    "<tr><td>" + t("Przerwany zapis", "Interrupted writing") + "</td><td>" + t("Urządzenie może nie uruchomić się, ale nie jest uszkodzone. Powtórz aktualizację albo instalację od zera.",
+      "The device may not start, but it is not damaged. Repeat the update or the install from scratch.") + "</td></tr>" +
     "</table></div>" +
     "</div></section>";
 
@@ -103,61 +126,119 @@
   var manifest = null, busy = false;
 
   /* ---------------- UI helpers ---------------- */
-  function log(s, partial) {
-    iLog.textContent += s + (partial ? "" : "\n");
-    iLog.scrollTop = iLog.scrollHeight;
-  }
+  function log(s, partial) { iLog.textContent += s + (partial ? "" : "\n"); iLog.scrollTop = iLog.scrollHeight; }
   function msg(pl, en) { iMsg.innerHTML = t(pl, en); }
-  var pctNow = 0;
   function pct(p) {
-    pctNow = Math.max(0, Math.min(100, p));
-    iBar.style.width = pctNow.toFixed(1) + "%";
-    iPct.textContent = Math.floor(pctNow) + "%";
+    p = Math.max(0, Math.min(100, p));
+    iBar.style.width = p.toFixed(1) + "%";
+    iPct.textContent = Math.floor(p) + "%";
   }
-  function stage(id, state) {
-    var li = root.querySelector('#rail li[data-s="' + id + '"]');
-    if (li) li.className = state || "";
-  }
-  function resetRail() { STAGES.forEach(function (s) { stage(s[0], ""); }); }
+  function stage(id, state) { var li = root.querySelector('#rail li[data-s="' + id + '"]'); if (li) li.className = state || ""; }
   function setCardState(s) { el("instCard").setAttribute("data-state", s); }
+  function partsFor(m) { return manifest ? manifest.parts.filter(function (p) { return m === "full" || !FULL_ONLY[p.role]; }) : []; }
+  function canGo() { return supported && manifest && !busy && (mode === "update" || iOk.checked); }
+  function refreshBtn() { iGo.disabled = !canGo(); }
 
-  iOk.addEventListener("change", function () { iGo.disabled = !iOk.checked || busy || !manifest; });
-
-  /* ---------------- manifest ---------------- */
-  function showFiles() {
-    if (!manifest) return;
-    el("fwBadge").innerHTML = "Firmware <b>" + manifest.version + "</b> · " + manifest.chip + " · " + manifest.flash_size +
-      (manifest.date ? ' · <span class="dim">' + manifest.date + "</span>" : "");
-    var total = 0;
-    el("iFiles").innerHTML = "<tr><th>" + t("Plik", "File") + "</th><th>" + t("Adres", "Address") + "</th><th>" + t("Rozmiar", "Size") + "</th></tr>" +
-      manifest.parts.map(function (p) { total += p.size || 0; return "<tr><td>" + p.file + "</td><td>" + hex(p.offset) + "</td><td>" + (p.size ? kb(p.size) : "") + "</td></tr>"; }).join("");
+  function drawRail() {
+    el("rail").innerHTML = STAGES[mode].map(function (s, i) {
+      return '<li data-s="' + s[0] + '"><i>' + (i + 1) + "</i><span>" + t(s[1], s[2]) + "</span></li>";
+    }).join("");
   }
+
+  function drawFiles() {
+    if (!manifest) return;
+    el("fwBadge").innerHTML = "Firmware <b>" + esc(manifest.version) + "</b> · " + esc(manifest.chip) + " · " + esc(manifest.flash_size) +
+      (manifest.date ? ' · <span class="dim">' + esc(manifest.date) + "</span>" : "");
+    var use = partsFor(mode);
+    el("iFiles").innerHTML = "<tr><th>" + t("Plik", "File") + "</th><th>" + t("Adres", "Address") + "</th><th>" + t("Rozmiar", "Size") + "</th></tr>" +
+      manifest.parts.map(function (p) {
+        var on = use.indexOf(p) >= 0;
+        return '<tr class="' + (on ? "" : "skip") + '"><td>' + esc(p.file) + "</td><td>" + hex(p.offset) + "</td><td>" + (p.size ? kb(p.size) : "") + "</td></tr>";
+      }).join("");
+  }
+
+  function setMode(m) {
+    if (busy) return;
+    mode = m;
+    root.querySelectorAll(".seg2 button").forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false"); });
+    el("iWarn").hidden = m !== "full";
+    el("iOkRow").hidden = m !== "full";
+    iOk.checked = false;
+    iGo.innerHTML = m === "full" ? t("Zainstaluj od zera", "Install from scratch") : t("Aktualizuj", "Update");
+    drawRail(); drawFiles(); pct(0); setCardState("");
+    if (supported) msg(m === "full" ? "Gotowe do instalacji od zera" : "Gotowe do aktualizacji", m === "full" ? "Ready to install from scratch" : "Ready to update");
+    else msg("Ta przeglądarka nie obsługuje USB", "This browser has no USB support");
+    refreshBtn();
+  }
+  root.querySelectorAll(".seg2 button").forEach(function (b) { b.addEventListener("click", function () { setMode(b.dataset.m); }); });
+  iOk.addEventListener("change", refreshBtn);
+  document.querySelectorAll(".lang button").forEach(function (b) { b.addEventListener("click", function () { setTimeout(drawFiles, 0); }); });
+  setMode("update");
+
   fetch(MANIFEST, { cache: "no-store" }).then(function (r) {
-    if (!r.ok) throw new Error(r.status);
+    if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
   }).then(function (m) {
-    manifest = m;
-    showFiles();
-    iGo.disabled = !iOk.checked || !supported;
+    manifest = m; drawFiles(); refreshBtn();
   }).catch(function (e) {
     el("fwBadge").innerHTML = t("Brak plików firmware na serwerze", "No firmware files on the server");
     log("manifest: " + e);
   });
-  document.querySelectorAll(".lang button").forEach(function (b) { b.addEventListener("click", function () { setTimeout(showFiles, 0); }); });
 
-  /* ---------------- install ---------------- */
+  /* ---------------- device helpers ---------------- */
+  function u32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+  function cstr(b, o, n) { var s = ""; for (var i = 0; i < n && b[o + i]; i++) s += String.fromCharCode(b[o + i]); return s; }
+
+  /* used length of a partition table image: entries up to and incl. the MD5 entry */
+  function ptUsed(b) {
+    for (var i = 0; i + 32 <= b.length; i += 32) {
+      if (b[i] === 0xff && b[i + 1] === 0xff) return i;
+    }
+    return b.length;
+  }
+  /* app slots from a partition table: ota_0, ota_1 offsets */
+  function otaSlots(b) {
+    var s = [];
+    for (var i = 0; i + 32 <= b.length; i += 32) {
+      if (b[i] !== 0xaa || b[i + 1] !== 0x50) break;
+      if (b[i + 2] === 0 && b[i + 3] >= 0x10 && b[i + 3] <= 0x1f) s[b[i + 3] - 0x10] = u32(b, i + 4);
+    }
+    return s;
+  }
+
+  /* What is on the device? -> {ok, reason, version} */
+  async function probe(loader, ptSite) {
+    var pt = await loader.readFlash(PT_ADDR, PT_SIZE);
+    if (pt[0] === 0xff && pt[1] === 0xff) return { ok: false, reason: "empty" };
+    var n = ptUsed(ptSite);
+    for (var i = 0; i < n; i++) if (pt[i] !== ptSite[i]) return { ok: false, reason: "layout" };
+    var slots = otaSlots(pt);
+    /* otadata: two 32-byte entries, the higher valid sequence number wins; blank -> ota_0 */
+    var od = await loader.readFlash(OTADATA_ADDR, 64), best = 0, slot = 0;
+    [0, 32].forEach(function (o) { var seq = u32(od, o); if (seq !== 0xffffffff && seq > best) best = seq; });
+    if (best) slot = (best - 1) % 2;
+    var at = slots[slot] !== undefined ? slots[slot] : slots[0];
+    var d = await loader.readFlash(at + 0x20, 0x50);                 /* esp_app_desc_t */
+    if (u32(d, 0) !== APP_DESC_MAGIC) return { ok: false, reason: "noapp" };
+    var proj = cstr(d, 48, 32), ver = cstr(d, 16, 32);
+    log("device: " + proj + " " + ver + " (ota_" + slot + " @" + hex(at) + ")");
+    if (manifest.project && proj !== manifest.project) return { ok: false, reason: "foreign", version: proj + " " + ver };
+    return { ok: true, version: ver };
+  }
+
+  /* ---------------- run ---------------- */
   function warnLeave(e) { e.preventDefault(); e.returnValue = ""; }
 
-  async function fetchParts(onProgress) {
-    var out = [], done = 0, total = manifest.parts.reduce(function (a, p) { return a + (p.size || 0); }, 0) || 1;
-    for (var i = 0; i < manifest.parts.length; i++) {
-      var p = manifest.parts[i];
+  async function fetchParts(list, onProgress) {
+    var out = [], done = 0, total = list.reduce(function (a, p) { return a + (p.size || 0); }, 0) || 1;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
       var r = await fetch("firmware/" + p.file, { cache: "no-store" });
       if (!r.ok) throw new Error(tx("Nie udało się pobrać ", "Could not download ") + p.file + " (HTTP " + r.status + ")");
       var data = new Uint8Array(await r.arrayBuffer());
       if (p.size && data.length !== p.size) throw new Error(p.file + ": " + tx("zły rozmiar pliku", "wrong file size"));
       if (p.md5 && md5(data) !== p.md5) throw new Error(p.file + ": " + tx("plik uszkodzony (MD5)", "file corrupted (MD5)"));
-      out.push({ data: data, address: p.offset, name: p.file });
+      out.push({ data: data, address: p.offset, name: p.file, role: p.role });
       done += data.length;
       onProgress(done / total);
     }
@@ -166,58 +247,90 @@
 
   function niceError(e) {
     var s = String(e && e.message || e);
+    if (e && e.user) return s;
     if (/open/i.test(s) && /port/i.test(s)) return tx("Nie można otworzyć portu. Zamknij inne programy, które go używają, i spróbuj ponownie.", "Cannot open the port. Close other programs that use it and try again.");
     if (/Failed to connect|timeout|Timeout|sync/i.test(s)) return tx("Brak połączenia z urządzeniem. Odłącz kabel na kilka sekund, podłącz i spróbuj ponownie.", "No connection to the device. Unplug the cable for a few seconds, plug it back and try again.");
-    if (/device has been lost|disconnected|NetworkError|break/i.test(s)) return tx("Połączenie zostało przerwane. Podłącz urządzenie i zainstaluj ponownie.", "The connection was lost. Connect the device and install again.");
+    if (/device has been lost|disconnected|NetworkError|break/i.test(s)) return tx("Połączenie zostało przerwane. Podłącz urządzenie i spróbuj ponownie.", "The connection was lost. Connect the device and try again.");
     return s;
   }
+  function userError(pl, en) { var e = new Error(tx(pl, en)); e.user = true; return e; }
 
-  async function install() {
-    if (busy || !manifest) return;
+  async function run() {
+    if (!canGo()) return;
     var port;
     try {
       port = await navigator.serial.requestPort(iAll.checked ? {} : { filters: [{ usbVendorId: ESPRESSIF_VID }] });
     } catch (e) {
       return;                                   /* the user closed the port picker */
     }
-    busy = true; iGo.disabled = true; iOk.disabled = true;
-    iLog.textContent = ""; resetRail(); pct(0); setCardState("run");
+    var full = mode === "full";
+    busy = true; refreshBtn(); iOk.disabled = true;
+    root.querySelectorAll(".seg2 button").forEach(function (b) { b.disabled = true; });
+    iLog.textContent = ""; drawRail(); pct(0); setCardState("run");
+    log("mode: " + (full ? "full install" : "update") + ", firmware " + manifest.version);
     window.addEventListener("beforeunload", warnLeave);
-    var transport = null, loader = null, eraseTimer = null, cur = "dl";
+    var transport = null, eraseTimer = null, cur = "dl";
     try {
-      /* 1. files first: a download problem must not leave an erased device */
+      /* 1. files first: a download problem must not touch the device */
       stage("dl", "on"); msg("Pobieranie plików…", "Downloading files…");
-      var files = await fetchParts(function (f) { pct(5 * f); });
-      log("files: " + files.map(function (f) { return f.name + " @" + hex(f.address) + " " + f.data.length + " B"; }).join(", "));
+      var need = partsFor(mode), ptPart = manifest.parts.filter(function (p) { return p.role === "partition-table"; })[0];
+      if (!full && ptPart && need.indexOf(ptPart) < 0) need = need.concat([ptPart]);     /* for the comparison only */
+      var files = await fetchParts(need, function (f) { pct(5 * f); });
+      var ptSite = null;
+      if (!full) {
+        ptSite = files.filter(function (f) { return f.role === "partition-table"; })[0];
+        files = files.filter(function (f) { return !FULL_ONLY[f.role]; });
+        if (!ptSite) throw userError("Brak tablicy partycji na serwerze", "No partition table on the server");
+        ptSite = ptSite.data;
+      }
+      log("write: " + files.map(function (f) { return f.name + " @" + hex(f.address); }).join(", "));
       stage("dl", "ok");
 
       /* 2. connect, check the chip and the flash */
       cur = "conn"; stage("conn", "on"); msg("Łączenie z urządzeniem…", "Connecting to the device…");
       var esptool = await import(ESPTOOL_URL);
       transport = new esptool.Transport(port, false);
-      loader = new esptool.ESPLoader({
+      var loader = new esptool.ESPLoader({
         transport: transport, baudrate: 921600,
         terminal: { clean: function () {}, writeLine: function (d) { log(d); }, write: function (d) { log(d, true); } },
       });
       var chip = await loader.main();
       log("chip: " + chip);
-      if (!/ESP32-S3/i.test(chip)) throw new Error(tx("To nie jest CAN Monitor mini (układ: ", "This is not a CAN Monitor mini (chip: ") + chip + ")");
+      if (!/ESP32-S3/i.test(chip)) throw userError("To nie jest CAN Monitor mini (układ: " + chip + ")", "This is not a CAN Monitor mini (chip: " + chip + ")");
       var fsz = await loader.detectFlashSize();
       log("flash: " + fsz);
-      var need = parseInt(manifest.flash_size, 10), have = parseInt(fsz, 10);
-      if (!(have >= need)) throw new Error(tx("Za mała pamięć flash: ", "Flash too small: ") + fsz + " (" + tx("potrzeba ", "need ") + manifest.flash_size + ")");
+      if (!(parseInt(fsz, 10) >= parseInt(manifest.flash_size, 10)))
+        throw userError("Za mała pamięć flash: " + fsz + " (potrzeba " + manifest.flash_size + ")", "Flash too small: " + fsz + " (need " + manifest.flash_size + ")");
       stage("conn", "ok"); pct(8);
 
-      /* 3. full erase (~20-40 s, no progress from the chip: estimate) */
-      cur = "erase"; stage("erase", "on"); msg("Czyszczenie całej pamięci… (do 1 min)", "Erasing the whole memory… (up to 1 min)");
-      var t0 = Date.now();
-      eraseTimer = setInterval(function () { var s = (Date.now() - t0) / 1000; pct(8 + 22 * (1 - Math.exp(-s / 15))); }, 250);
-      await loader.eraseFlash();
-      clearInterval(eraseTimer); eraseTimer = null;
-      log("erase: " + ((Date.now() - t0) / 1000).toFixed(1) + " s");
-      stage("erase", "ok"); pct(30);
+      if (full) {
+        /* 3a. full erase (~20-40 s, no progress from the chip: estimate) */
+        cur = "erase"; stage("erase", "on"); msg("Czyszczenie całej pamięci… (do 1 min)", "Erasing the whole memory… (up to 1 min)");
+        var t0 = Date.now();
+        eraseTimer = setInterval(function () { var s = (Date.now() - t0) / 1000; pct(8 + 22 * (1 - Math.exp(-s / 15))); }, 250);
+        await loader.eraseFlash();
+        clearInterval(eraseTimer); eraseTimer = null;
+        log("erase: " + ((Date.now() - t0) / 1000).toFixed(1) + " s");
+        stage("erase", "ok");
+      } else {
+        /* 3b. is this a CAN Monitor mini with the same memory layout? */
+        cur = "check"; stage("check", "on"); msg("Sprawdzanie urządzenia…", "Checking the device…");
+        var st = await probe(loader, ptSite);
+        if (!st.ok) {
+          var why = {
+            empty:   ["Urządzenie jest puste.", "The device is empty."],
+            noapp:   ["Na urządzeniu nie ma działającego firmware.", "There is no working firmware on the device."],
+            foreign: ["Na urządzeniu jest inny firmware (" + st.version + ").", "The device runs other firmware (" + st.version + ")."],
+            layout:  ["Nowy firmware ma inny układ pamięci.", "The new firmware has a different memory layout."],
+          }[st.reason];
+          throw userError("Aktualizacja niemożliwa. " + why[0] + " Użyj „Instalacji od zera”.", "Update not possible. " + why[1] + " Use “Install from scratch”.");
+        }
+        stage("check", "ok");
+        msg("Na urządzeniu: " + st.version + " → " + manifest.version, "On the device: " + st.version + " → " + manifest.version);
+      }
+      pct(30);
 
-      /* 4. write + MD5 check of every file */
+      /* 4. write + MD5 check of every file (only the sectors of each file are erased) */
       cur = "write"; stage("write", "on");
       var sizes = files.map(function (f) { return f.data.length; }), all = sizes.reduce(function (a, b) { return a + b; }, 0);
       var before = function (i) { var s = 0; for (var k = 0; k < i; k++) s += sizes[k]; return s; };
@@ -228,7 +341,7 @@
         reportProgress: function (i, written, total) {
           var f = total ? written / total : 0;
           pct(30 + 68 * (before(i) + f * sizes[i]) / all);
-          iMsg.innerHTML = t("Zapis ", "Writing ") + "<b>" + files[i].name + "</b> (" + (i + 1) + "/" + files.length + ")";
+          iMsg.innerHTML = t("Zapis ", "Writing ") + "<b>" + esc(files[i].name) + "</b> (" + (i + 1) + "/" + files.length + ")";
         },
         calculateMD5Hash: md5,
       });
@@ -240,23 +353,26 @@
       try { await transport.disconnect(); } catch (e) {}
       transport = null;
       stage("boot", "ok"); pct(100); setCardState("ok");
-      msg("Gotowe. Urządzenie uruchamia się z firmware " + manifest.version + " i za chwilę pokaże kod QR.",
-          "Done. The device starts firmware " + manifest.version + " and shows the QR code in a moment.");
+      if (full) msg("Gotowe. Urządzenie uruchamia się z firmware " + manifest.version + " i za chwilę pokaże kod QR.",
+                    "Done. The device starts firmware " + manifest.version + " and shows the QR code in a moment.");
+      else msg("Gotowe. Urządzenie uruchamia się z firmware " + manifest.version + ". Ustawienia zostały zachowane.",
+               "Done. The device starts firmware " + manifest.version + ". The settings were kept.");
     } catch (e) {
       if (eraseTimer) clearInterval(eraseTimer);
       log("ERROR: " + (e && e.stack || e));
       stage(cur, "err"); setCardState("err");
-      var nice = niceError(e);
-      iMsg.textContent = nice;
+      iMsg.textContent = niceError(e);
       if (transport) { try { await transport.disconnect(); } catch (x) {} }
     } finally {
-      busy = false; iOk.disabled = false; iGo.disabled = !iOk.checked;
+      busy = false; iOk.disabled = false;
+      root.querySelectorAll(".seg2 button").forEach(function (b) { b.disabled = false; });
+      refreshBtn();
       window.removeEventListener("beforeunload", warnLeave);
     }
   }
-  iGo.addEventListener("click", install);
+  iGo.addEventListener("click", run);
 
-  /* ---------------- MD5 (verification of the written data) ---------------- */
+  /* ---------------- MD5 (verification of the files and of the written data) ---------------- */
   function md5(bytes) {
     var K = new Uint32Array(64), S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
       4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];

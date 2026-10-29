@@ -54,3 +54,14 @@
   .inst-card{position:static}
 }
 @media (prefers-reduced-motion:reduce){.rail li.on i{animation:none}}
+
+/* mode switch: update / from scratch */
+.seg2{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin-bottom:22px;background:var(--bg);border:1px solid var(--line);border-radius:12px}
+.seg2 button{font:600 14px var(--f-body);color:var(--muted);background:none;border:0;border-radius:9px;padding:9px 8px;cursor:pointer}
+.seg2 button[aria-pressed="true"]{background:var(--panel2);color:var(--fg);box-shadow:inset 0 0 0 1px var(--line)}
+.seg2 button:disabled{cursor:default}
+.modes2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:22px}
+.modes2 div{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;font-size:14.5px;color:#b9c3d1;line-height:1.45}
+.modes2 b{display:block;color:var(--fg);font-family:var(--f-disp);margin-bottom:4px}
+.ifiles tr.skip td{color:var(--dim);opacity:.45}
+@media (max-width:560px){.modes2{grid-template-columns:minmax(0,1fr)}}

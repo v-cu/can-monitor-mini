@@ -1,5 +1,6 @@
 {
   "name": "CAN Monitor mini",
+  "project": "can_display",
   "version": "1.4.1",
   "chip": "ESP32-S3",
   "flash_size": "16MB",
@@ -9,37 +10,43 @@
       "file": "bootloader.bin",
       "offset": 0,
       "size": 22576,
-      "md5": "b6d80649e0f67ad9995fc0a13981efdf"
+      "md5": "b6d80649e0f67ad9995fc0a13981efdf",
+      "role": "bootloader"
     },
     {
       "file": "partition-table.bin",
       "offset": 32768,
       "size": 3072,
-      "md5": "dcba1c912a617b5fd3297b5adc0aea17"
+      "md5": "dcba1c912a617b5fd3297b5adc0aea17",
+      "role": "partition-table"
     },
     {
       "file": "ota_data_initial.bin",
       "offset": 61440,
       "size": 8192,
-      "md5": "84d04c9d6cc8ef35bf825d51a5277699"
+      "md5": "84d04c9d6cc8ef35bf825d51a5277699",
+      "role": "otadata"
     },
     {
       "file": "can_display.bin",
       "offset": 131072,
       "size": 2675248,
-      "md5": "ef8feecd8bb43ac957ccab14c50fa091"
+      "md5": "ef8feecd8bb43ac957ccab14c50fa091",
+      "role": "app"
     },
     {
       "file": "engine_dids.bin",
       "offset": 13631488,
       "size": 1707217,
-      "md5": "731e0d92588ead598e2aa81f9e770b88"
+      "md5": "731e0d92588ead598e2aa81f9e770b88",
+      "role": "engdb"
     },
     {
       "file": "engine_dtc.bin",
       "offset": 15728640,
       "size": 383343,
-      "md5": "cff1068a33fcbff907e5d8c0772268da"
+      "md5": "cff1068a33fcbff907e5d8c0772268da",
+      "role": "engdtc"
     }
   ]
 }
