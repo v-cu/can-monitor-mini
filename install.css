@@ -65,3 +65,15 @@
 .modes2 b{display:block;color:var(--fg);font-family:var(--f-disp);margin-bottom:4px}
 .ifiles tr.skip td{color:var(--dim);opacity:.45}
 @media (max-width:560px){.modes2{grid-template-columns:minmax(0,1fr)}}
+
+/* device log */
+.inst-mon{margin-top:56px;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:24px}
+.inst-mon h3{margin-top:8px}
+.mon-sub{color:#b9c3d1;margin:0 0 12px}
+.mon-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:18px 0 12px}
+.mon-bar .btn{padding:10px 16px;font-size:14px}
+.mon-bar .btn:disabled{opacity:.4;cursor:default;filter:none}
+.mon-st{font:13px var(--f-mono);color:var(--muted);margin-left:6px}
+.mon-st.on{color:var(--cyan)}
+.mon-st.on::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--cyan);margin-right:8px;animation:ipulse 1.2s ease-in-out infinite}
+.mon-log{height:360px;overflow:auto;margin:0;font:12px/1.5 var(--f-mono);color:#9fb0c4;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px;white-space:pre-wrap;word-break:break-all}

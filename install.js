@@ -119,6 +119,28 @@
     "<tr><td>" + t("Przerwany zapis", "Interrupted writing") + "</td><td>" + t("Urządzenie może nie uruchomić się, ale nie jest uszkodzone. Powtórz aktualizację albo instalację od zera.",
       "The device may not start, but it is not damaged. Repeat the update or the install from scratch.") + "</td></tr>" +
     "</table></div>" +
+
+    '<div class="inst-mon" id="mon">' +
+    '<div class="label">' + t("Diagnostyka", "Diagnostics") + "</div>" +
+    "<h3>" + t("Log urządzenia", "Device log") + "</h3>" +
+    '<p class="mon-sub">' + t("Gdy urządzenie działa nieprawidłowo, zapisz jego log i wyślij go do nas:",
+      "If the device misbehaves, save its log and send it to us:") + "</p>" +
+    '<ol class="isteps">' +
+    "<li>" + t("Podłącz urządzenie kablem USB-C do komputera i kliknij <b>Połącz</b>.", "Connect the device with a USB-C cable and click <b>Connect</b>.") + "</li>" +
+    "<li>" + t("Kliknij <b>Restart urządzenia</b>: log pokaże cały start.", "Click <b>Restart the device</b>: the log shows the whole start-up.") + "</li>" +
+    "<li>" + t("Zrób to, co nie działa (np. połącz telefon albo laptop z siecią CAN-Display i otwórz 192.168.4.1).", "Do what does not work (e.g. join the CAN-Display network with a phone or laptop and open 192.168.4.1).") + "</li>" +
+    "<li>" + t("Kliknij <b>Zapisz log</b> i wyślij plik.", "Click <b>Save log</b> and send the file.") + "</li>" +
+    "</ol>" +
+    '<div class="mon-bar">' +
+    '<button type="button" class="btn pri" id="mConn">' + t("Połącz", "Connect") + "</button>" +
+    '<button type="button" class="btn" id="mRst" disabled>' + t("Restart urządzenia", "Restart the device") + "</button>" +
+    '<button type="button" class="btn" id="mSave" disabled>' + t("Zapisz log", "Save log") + "</button>" +
+    '<button type="button" class="btn" id="mCopy" disabled>' + t("Kopiuj", "Copy") + "</button>" +
+    '<button type="button" class="btn" id="mClr">' + t("Wyczyść", "Clear") + "</button>" +
+    '<span class="mon-st" id="mSt"></span>' +
+    "</div>" +
+    '<pre class="mon-log" id="mLog"></pre>' +
+    "</div>" +
     "</div></section>";
 
   var el = function (id) { return document.getElementById(id); };
@@ -370,7 +392,108 @@
       window.removeEventListener("beforeunload", warnLeave);
     }
   }
-  iGo.addEventListener("click", run);
+  iGo.addEventListener("click", async function () { await monClose(); run(); });
+
+  /* ---------------- device log (secondary console on USB-Serial-JTAG) ---------------- */
+  var mon = { port: null, reader: null, on: false, text: "" };
+  var mLog = el("mLog"), mSt = el("mSt");
+  function monUi() {
+    var on = !!mon.port;
+    el("mConn").innerHTML = on ? t("Rozłącz", "Disconnect") : t("Połącz", "Connect");
+    el("mRst").disabled = !on;
+    el("mSave").disabled = el("mCopy").disabled = !mon.text;
+    mSt.innerHTML = on ? t("połączono – log na żywo", "connected – live log") : "";
+    mSt.className = "mon-st" + (on ? " on" : "");
+  }
+  function monAppend(s) {
+    s = s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\r/g, "");
+    mon.text += s;
+    if (mon.text.length > 600000) mon.text = mon.text.slice(-500000);
+    var atEnd = mLog.scrollTop + mLog.clientHeight >= mLog.scrollHeight - 30;
+    mLog.textContent = mon.text.length > 120000 ? mon.text.slice(-120000) : mon.text;
+    if (atEnd) mLog.scrollTop = mLog.scrollHeight;
+    monUi();
+  }
+  async function monRead() {
+    var dec = new TextDecoder();
+    while (mon.on && mon.port && mon.port.readable) {
+      mon.reader = mon.port.readable.getReader();
+      try {
+        for (;;) {
+          var r = await mon.reader.read();
+          if (r.done) break;
+          monAppend(dec.decode(r.value, { stream: true }));
+        }
+      } catch (e) {
+        if (mon.on) monAppend("\n[" + tx("połączenie przerwane", "connection lost") + ": " + (e && e.message || e) + "]\n");
+        mon.on = false;
+      } finally {
+        try { mon.reader.releaseLock(); } catch (e) {}
+        mon.reader = null;
+      }
+    }
+    if (mon.port) { try { await mon.port.close(); } catch (e) {} mon.port = null; }
+    monUi();
+  }
+  async function monClose() {
+    if (!mon.port) return;
+    mon.on = false;
+    if (mon.reader) { try { await mon.reader.cancel(); } catch (e) {} }
+    var waited = 0;
+    while (mon.port && waited < 1500) { await new Promise(function (r) { setTimeout(r, 50); }); waited += 50; }
+    if (mon.port) { try { await mon.port.close(); } catch (e) {} mon.port = null; }
+    monUi();
+  }
+  async function monOpen() {
+    if (busy) return;
+    var port;
+    try { port = await navigator.serial.requestPort(iAll.checked ? {} : { filters: [{ usbVendorId: ESPRESSIF_VID }] }); }
+    catch (e) { return; }
+    try {
+      await port.open({ baudRate: 115200 });
+      /* DTR / RTS released: on the USB-Serial-JTAG they would hold the chip in reset / download mode */
+      try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+    } catch (e) {
+      mSt.textContent = tx("Nie można otworzyć portu. Zamknij inne programy, które go używają.", "Cannot open the port. Close other programs that use it.");
+      return;
+    }
+    mon.port = port; mon.on = true;
+    monAppend("[" + new Date().toISOString() + " " + tx("połączono", "connected") + "]\n");
+    monRead();
+  }
+  el("mConn").addEventListener("click", function () { if (!supported) return; if (mon.port) monClose(); else monOpen(); });
+  el("mRst").addEventListener("click", async function () {
+    if (!mon.port) return;
+    monAppend("\n[" + new Date().toISOString() + " " + tx("restart urządzenia", "device restart") + "]\n");
+    try {
+      await mon.port.setSignals({ dataTerminalReady: false, requestToSend: true });     /* EN low */
+      await new Promise(function (r) { setTimeout(r, 120); });
+      await mon.port.setSignals({ dataTerminalReady: false, requestToSend: false });    /* run, GPIO0 high: normal boot */
+    } catch (e) { monAppend("[reset: " + (e && e.message || e) + "]\n"); }
+  });
+  el("mClr").addEventListener("click", function () { mon.text = ""; mLog.textContent = ""; monUi(); });
+  el("mCopy").addEventListener("click", function () {
+    var b = el("mCopy");
+    function done(ok) { var o = b.innerHTML; b.innerHTML = ok ? t("Skopiowano", "Copied") : t("Zaznacz i skopiuj ręcznie", "Select and copy by hand"); setTimeout(function () { b.innerHTML = o; }, 1500); }
+    if (navigator.clipboard) navigator.clipboard.writeText(mon.text).then(function () { done(true); }, function () { done(false); });
+    else done(false);
+  });
+  el("mSave").addEventListener("click", function () {
+    var head = "CAN Monitor mini log · " + new Date().toISOString() + " · " + navigator.userAgent + "\n" +
+               (manifest ? "site firmware: " + manifest.version + "\n" : "") + "\n";
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([head + mon.text], { type: "text/plain" }));
+    a.download = "can-monitor-log-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".txt";
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
+  if (navigator.serial && navigator.serial.addEventListener) {
+    navigator.serial.addEventListener("disconnect", function (e) {
+      if (mon.port && e.target === mon.port) { monAppend("\n[" + tx("urządzenie odłączone", "device unplugged") + "]\n"); mon.on = false; }
+    });
+  }
+  if (!supported) el("mConn").disabled = true;
+  monUi();
 
   /* ---------------- MD5 (verification of the files and of the written data) ---------------- */
   function md5(bytes) {
